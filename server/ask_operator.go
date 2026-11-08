@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -46,6 +47,11 @@ func (s *Server) toolAskOperator() actool.CoreTool {
 				ImagePath string `json:"image_path"`
 			}
 			_ = json.Unmarshal(in, &req)
+			if strings.TrimSpace(req.ImagePath) != "" {
+				if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+					return actool.Errorf(err.Error()), nil
+				}
+			}
 			q := strings.TrimSpace(req.Question)
 			if q == "" {
 				return actool.Errorf("Error: question is required"), nil
@@ -84,6 +90,9 @@ func stageAskOperatorImage(dataDir, taskID, src string) ([]chatAttachment, error
 	src = strings.TrimSpace(src)
 	if src == "" {
 		return nil, nil
+	}
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		return nil, err
 	}
 	ext := strings.ToLower(filepath.Ext(src))
 	if !askOperatorImageExt[ext] {

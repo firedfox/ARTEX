@@ -13,11 +13,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/config"
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -49,7 +51,7 @@ func main() {
 
 func run() int {
 	var (
-		addr    = flag.String("addr", ":8787", "HTTP listen address")
+		addr    = flag.String("addr", "127.0.0.1:8787", "HTTP listen address")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
 	)
@@ -81,6 +83,18 @@ func run() int {
 	defer stop()
 	ctx, shutdown := shutdownContext(sigCtx)
 	defer shutdown(agent.AbortShutdown)
+	dsn, _, err := config.PostgresDSN()
+	if err != nil {
+		log.Print("[security] PostgreSQL configuration is unavailable")
+		return 1
+	}
+	checkCtx, cancelCheck := context.WithTimeout(ctx, 10*time.Second)
+	err = db.CheckRuntimeDSN(checkCtx, dsn)
+	cancelCheck()
+	if err != nil {
+		log.Printf("[security] %v", err)
+		return 1
+	}
 
 	mgr, err := server.NewManager(*dataDir, *proxy)
 	if err != nil {
@@ -97,7 +111,26 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf("[config] skill directory: %s", skillDir)
-	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir(), server.WithSecretScrub())
+	// JWT signing key directory: ARTEX_JWT_KEY_DIR (the Docker image points it at
+	// the /app/keys volume) or the base dir. Never the browsable data dir.
+	keyDir := strings.TrimSpace(os.Getenv("ARTEX_JWT_KEY_DIR"))
+	if keyDir == "" {
+		keyDir = config.BaseDir()
+	}
+	if abs, err := filepath.Abs(keyDir); err == nil {
+		keyDir = abs
+	}
+	log.Printf("[config] JWT key directory: %s", keyDir)
+	// Proxies whose X-Forwarded-For the login rate limit reads; empty trusts none.
+	trusted, err := server.ParseTrustedProxies(os.Getenv("ARTEX_TRUSTED_PROXIES"))
+	if err != nil {
+		log.Printf("[config] ARTEX_TRUSTED_PROXIES: %v", err)
+		return 1
+	}
+	if len(trusted) > 0 {
+		log.Printf("[config] trusted proxies: %v", trusted)
+	}
+	srv := server.New(ctx, mgr, skillDir, *dataDir, keyDir, server.WithSecretScrub(), server.WithTrustedProxies(trusted))
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),

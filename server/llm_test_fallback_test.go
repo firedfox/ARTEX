@@ -27,8 +27,11 @@ func TestLLMTestStoredKeyFallbackIsTrimmed(t *testing.T) {
 		t.Skip("no postgres for this run")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s.archiveWG.Wait()
+	<-s.side.done
 
 	var gotKey atomic.Value
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,8 +109,11 @@ func TestLLMTestStoredProfileUsesProfileEndpoint(t *testing.T) {
 		t.Skip("no postgres for this run")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s.archiveWG.Wait()
+	<-s.side.done
 
 	var hits atomic.Int32
 	var gotKey atomic.Value

@@ -2,10 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 )
 
 func TestStageAskOperatorImage(t *testing.T) {
@@ -21,30 +24,24 @@ func TestStageAskOperatorImage(t *testing.T) {
 		t.Fatalf("empty src: att=%v err=%v", att, err)
 	}
 
-	// valid image -> copied under the task uploads, descriptor matches the chat format
+	// Images require an isolated runner, including previously accepted paths.
 	att, err = stageAskOperatorImage(dir, "7", src)
-	if err != nil || len(att) != 1 {
-		t.Fatalf("valid src: att=%v err=%v", att, err)
-	}
-	if !strings.HasPrefix(att[0].Path, "uploads/ask-operator-") || !strings.HasSuffix(att[0].Path, ".png") {
-		t.Fatalf("unexpected attachment path %q", att[0].Path)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "tasks", "7", "uploads", att[0].Name)); err != nil {
-		t.Fatalf("copy missing: %v", err)
+	if !errors.Is(err, executionpolicy.ErrIsolatedRunnerRequired) || att != nil {
+		t.Fatalf("image containment: att=%v err=%v", att, err)
 	}
 
-	// wrong extension rejected
+	// Refusal precedes path/extension checks and does not reveal whether a file exists.
 	bad := filepath.Join(dir, "payload.exe")
 	if err := os.WriteFile(bad, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageAskOperatorImage(dir, "7", bad); err == nil || !strings.Contains(err.Error(), "png/jpg") {
-		t.Fatalf("expected extension rejection, got %v", err)
+	if _, err := stageAskOperatorImage(dir, "7", bad); !errors.Is(err, executionpolicy.ErrIsolatedRunnerRequired) {
+		t.Fatalf("expected containment rejection, got %v", err)
 	}
 
 	// missing file rejected
-	if _, err := stageAskOperatorImage(dir, "7", filepath.Join(dir, "nope.png")); err == nil {
-		t.Fatal("expected missing-file rejection")
+	if _, err := stageAskOperatorImage(dir, "7", filepath.Join(dir, "nope.png")); !errors.Is(err, executionpolicy.ErrIsolatedRunnerRequired) {
+		t.Fatal("missing file should receive the same containment rejection")
 	}
 }
 

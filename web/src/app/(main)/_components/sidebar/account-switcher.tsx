@@ -12,7 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { auth } from "@/lib/auth";
+import { useSignOut } from "@/hooks/use-sign-out";
 import { cn, getInitials } from "@/lib/utils";
 
 import { ChangePasswordDialog } from "./change-password-dialog";
@@ -30,11 +30,7 @@ export function AccountSwitcher({
 }) {
   const [activeUser, setActiveUser] = useState(users[0]);
   const [pwOpen, setPwOpen] = useState(false);
-
-  function handleLogout() {
-    auth.clearToken();
-    window.location.href = "/login";
-  }
+  const { signOut, signingOut } = useSignOut();
 
   if (!activeUser) {
     return null;
@@ -82,9 +78,9 @@ export function AccountSwitcher({
             <KeyRound />
             Change password
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+          <DropdownMenuItem onClick={signOut} disabled={signingOut} className="text-destructive focus:text-destructive">
             <LogOut />
-            Sign out
+            {signingOut ? "Signing out…" : "Sign out"}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

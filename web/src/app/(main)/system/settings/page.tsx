@@ -11,11 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { useExecutionStatus } from "@/hooks/use-execution-status";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
 import type { Settings } from "@/lib/types";
 
 export default function SystemSettingsPage() {
+  const executionStatus = useExecutionStatus();
+  const toolsUnavailable = executionStatus !== "ready";
   const [trafficCapture, setTrafficCapture] = React.useState(false);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
@@ -89,6 +92,7 @@ export default function SystemSettingsPage() {
       .finally(() => setSaving(false));
   };
   const detectPython = () => {
+    if (toolsUnavailable) return;
     setSaving(true);
     api
       .detectPython()
@@ -233,6 +237,7 @@ export default function SystemSettingsPage() {
   // Run a real "test" search ("test") against the CURRENT form values (backend +
   // proxy + entered key), falling back to saved values server-side. Toasts result.
   const runTest = () => {
+    if (toolsUnavailable) return;
     setTesting(true);
     api
       .testWebSearch({
@@ -257,6 +262,12 @@ export default function SystemSettingsPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">System settings</h1>
         <p className="text-muted-foreground text-sm">Global runtime switches</p>
+        {toolsUnavailable && (
+          <p className="mt-2 text-muted-foreground text-sm">
+            You can save configuration here. Saving settings does not resume active tool execution; execution tests remain
+            unavailable until the server confirms an isolated runner is ready.
+          </p>
+        )}
       </div>
 
       {/* Multi-column instead of grid: the web search card is several times taller than the others and
@@ -499,7 +510,8 @@ export default function SystemSettingsPage() {
                   (no snippets); use WebFetch when you need the page body.
                 </p>
                 <p className="text-muted-foreground text-xs leading-relaxed">
-                  Verify these conditions yourself; the system does not block on them. Use the "Test search" button below to run a real search and check.
+                  Verify these conditions yourself. When active tool execution is available, use the "Test search" button
+                  below to check the configuration with a real search.
                 </p>
               </div>
             )}
@@ -599,13 +611,15 @@ export default function SystemSettingsPage() {
             {webSearch && (
               <div className="flex items-center justify-between gap-4 border-t pt-4">
                 <p className="text-muted-foreground text-xs">
-                  Run a real "test" search with the current config (source + proxy + key) to verify it works.
+                  {toolsUnavailable
+                    ? "Search tests are paused while active tool execution is unavailable. The configuration can still be saved."
+                    : 'Run a real "test" search with the current config (source + proxy + key) to verify it works.'}
                 </p>
                 <Button
                   type="button"
                   variant="outline"
                   onClick={runTest}
-                  disabled={!loaded || testing}
+                  disabled={!loaded || testing || toolsUnavailable}
                   className="shrink-0"
                 >
                   {testing ? "Testing…" : "Test search"}
@@ -622,8 +636,8 @@ export default function SystemSettingsPage() {
               Custom scripts · Python interpreter
             </CardTitle>
             <CardDescription>
-              Custom <b>script</b> tools run Python with it. Auto-detected at startup (python3 first); you can enter an absolute path to a venv /
-              specific version here; leave empty to auto-detect at runtime.
+              Save the Python interpreter path for custom <b>script</b> tools. Interpreter detection and script execution
+              require an isolated runner; saving a path does not enable them.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -635,7 +649,7 @@ export default function SystemSettingsPage() {
                 disabled={!loaded || saving}
                 onChange={(e) => setPyInterp(e.target.value)}
               />
-              <Button variant="outline" onClick={detectPython} disabled={!loaded || saving}>
+              <Button variant="outline" onClick={detectPython} disabled={!loaded || saving || toolsUnavailable}>
                 Re-detect
               </Button>
               <Button onClick={savePython} disabled={!loaded || saving}>

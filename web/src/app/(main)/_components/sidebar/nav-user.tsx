@@ -14,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
-import { auth } from "@/lib/auth";
+import { useSignOut } from "@/hooks/use-sign-out";
 import { getInitials } from "@/lib/utils";
 
 import { ChangePasswordDialog } from "./change-password-dialog";
@@ -30,13 +30,7 @@ export function NavUser({
 }) {
   const { isMobile } = useSidebar();
   const [pwOpen, setPwOpen] = React.useState(false);
-
-  function handleLogout() {
-    auth.clearToken();
-    // Hard navigation: let the browser start a fresh request with the cleared cookie,
-    // so middleware reads the empty token correctly and lets /login through
-    window.location.href = "/login";
-  }
+  const { signOut, signingOut } = useSignOut();
 
   return (
     <SidebarMenu>
@@ -82,9 +76,9 @@ export function NavUser({
               Change password
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+            <DropdownMenuItem onClick={signOut} disabled={signingOut} className="text-destructive focus:text-destructive">
               <LogOut />
-              Sign out
+              {signingOut ? "Signing out…" : "Sign out"}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

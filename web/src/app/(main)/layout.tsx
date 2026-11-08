@@ -5,6 +5,7 @@ import * as React from "react";
 
 import { AppSidebar } from "@/app/(main)/_components/sidebar/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { ExecutionStatusProvider } from "@/hooks/use-execution-status";
 import { auth } from "@/lib/auth";
 import { getClientCookie } from "@/lib/cookie.client";
 import {
@@ -79,7 +80,9 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           "min-w-0 overflow-x-hidden",
         )}
       >
-        <MainContent>{children}</MainContent>
+        <ExecutionStatusProvider>
+          <MainContent>{children}</MainContent>
+        </ExecutionStatusProvider>
       </SidebarInset>
     </SidebarProvider>
   );

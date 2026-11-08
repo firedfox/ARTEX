@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -90,6 +91,9 @@ func (s *Server) toolCreateSkill() actool.CoreTool {
 			"instructions": strParam("Markdown body instructions (optional)"),
 		}, "name", "description"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
 			var a struct{ Name, Description, Instructions string }
 			_ = json.Unmarshal(in, &a)
 			if !validSkillName(a.Name) {
@@ -132,6 +136,9 @@ func (s *Server) toolUpdateSkillFile() actool.CoreTool {
 			"content": strParam("full file content"),
 		}, "name", "content"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
 			var a struct{ Name, File, Content string }
 			_ = json.Unmarshal(in, &a)
 			if !validSkillName(a.Name) {

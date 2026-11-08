@@ -19,9 +19,9 @@ func TestMgmtAPI(t *testing.T) {
 		t.Skip("postgres unavailable — skipping management API test")
 	}
 	td := t.TempDir()
-	s := New(context.Background(), m, td, td, td)
+	s := newTestServer(t, context.Background(), m, td, td, td)
 	h := s.Handler()
-	tok, err := signJWT(s.jwtKey)
+	tok, err := issueTestSession(s)
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
 	}

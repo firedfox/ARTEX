@@ -112,8 +112,11 @@ func TestOllamaKeylessProfileLifecycle(t *testing.T) {
 		t.Skip("no postgres for this run")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s.archiveWG.Wait()
+	<-s.side.done
 
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -198,8 +201,11 @@ func TestOllamaListModels(t *testing.T) {
 		t.Skip("no postgres for this run")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s.archiveWG.Wait()
+	<-s.side.done
 
 	call := func(baseURL string) (bool, []string) {
 		body, _ := json.Marshal(map[string]any{"provider": "ollama", "base_url": baseURL, "api_key": ""})

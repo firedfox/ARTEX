@@ -5,6 +5,7 @@ web/out
 server/webui/dist
 /artex
 data
+keys
 *.db
 transcripts
 bench/kv
@@ -14,3 +15,16 @@ bench/.env
 bench/scheduler.py
 bench/entrypoint_v2.sh
 bench/seed_v2.sh
+# Private runtime configuration and backups never enter the image build context.
+.env
+.env.*
+!.env.example
+config.json
+**/jwt.key*
+**/oauth.key*
+*.pem
+*.key
+backups
+*.sql
+!db/schema.sql
+!scripts/migrate-runtime-role.sql
