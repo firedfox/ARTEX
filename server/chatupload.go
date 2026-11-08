@@ -74,9 +74,14 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		defer s.engine.decInflight(id)
 	}
-	dir := filepath.Join(s.m.dir, sub, id, "uploads")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		writeErr(w, 500, "failed to create directory: "+err.Error())
+	root, _, ok := s.openWorkspace(w, "")
+	if !ok {
+		return
+	}
+	defer root.Close()
+	dir := filepath.Join(sub, id, "uploads")
+	if err := root.MkdirAll(dir, 0o755); err != nil {
+		workspacePathError(w, err)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatUpload)
@@ -84,6 +89,7 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "failed to parse the upload or size limit exceeded: "+err.Error())
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 	files := r.MultipartForm.File["file"]
 	if len(files) == 0 {
 		writeErr(w, 400, "missing upload file (form field file)")
@@ -95,32 +101,39 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 			continue
 		}
-		dest := uniqueUploadPath(dir, name)
-		if err := saveUpload(hdr, dest); err != nil {
-			writeErr(w, 500, "Save failed: "+err.Error())
+		dest, base, err := uniqueUploadFile(root, dir, name)
+		if err != nil {
+			workspacePathError(w, err)
 			return
 		}
-		base := filepath.Base(dest)
-		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: dest})
+		if err := saveUpload(hdr, dest); err != nil {
+			writeErr(w, 500, "failed to save chat attachment")
+			return
+		}
+		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: filepath.Join(s.m.dir, dir, base)})
 	}
 	writeJSON(w, 200, map[string]any{"attachments": out})
 }
 
-// uniqueUploadPath returns dir/name, or dir/name-1, dir/name-2… when it already exists,
-// so re-uploading the same filename never clobbers a prior attachment.
-func uniqueUploadPath(dir, name string) string {
-	dest := filepath.Join(dir, name)
-	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		return dest
-	}
+// Reserve the filename with O_EXCL through the rooted handle. A check-then-create
+// can overwrite another upload or follow a symlink inserted after the check.
+func uniqueUploadFile(root *os.Root, dir, name string) (*os.File, string, error) {
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-	for i := 1; ; i++ {
-		cand := filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, i, ext))
-		if _, err := os.Stat(cand); os.IsNotExist(err) {
-			return cand
+	for i := 0; i < 1000; i++ {
+		candidate := name
+		if i > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		file, err := root.OpenFile(filepath.Join(dir, candidate), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return file, candidate, nil
+		}
+		if !os.IsExist(err) {
+			return nil, "", err
 		}
 	}
+	return nil, "", fmt.Errorf("too many attachments with this name: %w", os.ErrExist)
 }
 
 // composeAgentMessage appends an attachment manifest to the user's message so the agent

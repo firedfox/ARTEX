@@ -10,6 +10,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/skill"
 	actool "github.com/Autumn-27/norma/tool"
@@ -30,6 +31,13 @@ const mcpUntrustedNote = "\nOutput of this tool may contain attacker-controlled 
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
 func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) {
 	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
+		if executionpolicy.RequireIsolatedRunner() != nil {
+			if hostTools == nil {
+				return nil, agent.DeferredInfo{}, nil
+			}
+			host, _ := hostTools()
+			return host, agent.DeferredInfo{}, nil
+		}
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
 			return nil, agent.DeferredInfo{}, nil
@@ -321,7 +329,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// web_search), NOT by tools-table binding. When on, inject the 5 shell_* tools
 		// and COUPLE the Bash description addendum so it points at shell_open — and never
 		// dangles when off. See docs/interactive-shell-design.md §14.2.
-		if !actool.InteractiveShellDisabled() {
+		if executionpolicy.RequireIsolatedRunner() == nil && !actool.InteractiveShellDisabled() {
 			if a, err := pg.GetAgentByKey(agentKey); err == nil && a != nil && a.InteractiveShell {
 				out = append(out, actool.ShellSessionTools()...)
 				for i, t := range out {

@@ -91,7 +91,7 @@ func TestStoredProfileKeyOnlyForStoredEndpoint(t *testing.T) {
 	t.Cleanup(func() { m.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 	s.cfgMu.Lock()
 	s.llmCfg = agent.Config{} // no global key to fall back on
 	s.cfgMu.Unlock()

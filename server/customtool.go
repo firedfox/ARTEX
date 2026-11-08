@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -144,6 +145,10 @@ type testToolReq struct {
 // flag, so the editor can debug a tool before saving it. Per-kind timeouts still
 // apply from the exec spec (with defaults); the outer ceiling is a hard backstop.
 func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		writeErr(w, 503, err.Error())
+		return
+	}
 	pg := s.pg(w)
 	if pg == nil {
 		return
@@ -329,6 +334,9 @@ func ensureSchema(raw json.RawMessage) map[string]any {
 // ---------- command: render the command → reuse the Bash low-level run ----------
 
 func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		return actool.Errorf(err.Error()), nil
+	}
 	var spec commandExec
 	_ = json.Unmarshal(execRaw, &spec)
 	if strings.TrimSpace(spec.Command) == "" {
@@ -349,6 +357,9 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 // ---------- script (Python only): temp file + stdin JSON + env ----------
 
 func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		return actool.Errorf(err.Error()), nil
+	}
 	var spec scriptExec
 	_ = json.Unmarshal(execRaw, &spec)
 	if strings.TrimSpace(spec.Code) == "" {
@@ -377,6 +388,9 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 // with the params JSON on stdin + scalar params mirrored to TOOL_<NAME> env, and
 // returns combined stdout+stderr (with a timeout/exit note). Standalone + testable.
 func execPython(ctx context.Context, interp, key, code string, params map[string]any, workDir string, sessionEnv []string, timeout time.Duration) (string, error) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		return "", err
+	}
 	toolsDir := filepath.Join(workDir, ".tools")
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		return "", err
@@ -418,6 +432,9 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 // ---------- http: native request + proxy ----------
 
 func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, params map[string]any, tc *actool.ToolContext) (actool.Result, error) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		return actool.Errorf(err.Error()), nil
+	}
 	var spec httpExec
 	_ = json.Unmarshal(execRaw, &spec)
 	method := strings.ToUpper(strings.TrimSpace(spec.Method))

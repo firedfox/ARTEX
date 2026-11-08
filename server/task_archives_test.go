@@ -35,9 +35,9 @@ func TestTaskArchiveAPIQueueListAndLimits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dataDir := t.TempDir()
-	s := New(ctx, m, dataDir, dataDir, dataDir)
+	s := newTestServer(t, ctx, m, dataDir, dataDir, dataDir)
 	s.archiveWG.Wait()
-	token, err := signJWT(s.jwtKey)
+	token, err := issueTestSession(s)
 	if err != nil {
 		t.Fatal(err)
 	}

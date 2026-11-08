@@ -57,7 +57,7 @@ func TestNewAppliesSecretScrubOption(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithSecretScrub())
+	_ = newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithSecretScrub())
 
 	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("OPENAI_API_KEY") != "" {
 		t.Fatal("New did not apply WithSecretScrub: the secrets are still in the environment")

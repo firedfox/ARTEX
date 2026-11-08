@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
+import { auth } from "@/lib/auth";
 
 export function ChangePasswordDialog({
   open,
@@ -48,12 +49,17 @@ export function ChangePasswordDialog({
       toast.error("The two new passwords do not match");
       return;
     }
+    if ([...newPassword].length < 12 || new TextEncoder().encode(newPassword).length > 72) {
+      toast.error("Use at least 12 characters and no more than 72 UTF-8 bytes");
+      return;
+    }
     setSaving(true);
     api
       .changePassword(oldPassword, newPassword)
-      .then(() => {
-        toast.success("Password changed");
-        onOpenChange(false);
+      .then((result) => {
+        if (result.ok !== true) throw new Error("The server did not confirm the password change");
+        auth.clearToken();
+        window.location.replace("/login");
       })
       .catch((err) => toast.error(`Change failed: ${(err as Error).message}`))
       .finally(() => setSaving(false));
@@ -66,7 +72,8 @@ export function ChangePasswordDialog({
           <DialogHeader>
             <DialogTitle>Change password</DialogTitle>
             <DialogDescription>
-              The username is fixed as <b>ARTEX</b>. Enter the current password to verify; login tokens issued before the change stay valid until they expire.
+              The username is fixed as <b>ARTEX</b>. Changing the password signs out every session, including this one. Sign
+              in again with the new password.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3 py-4">
@@ -87,6 +94,8 @@ export function ChangePasswordDialog({
                 id="cp-new"
                 type="password"
                 autoComplete="new-password"
+                minLength={12}
+                maxLength={72}
                 value={newPassword}
                 disabled={saving}
                 onChange={(e) => setNewPassword(e.target.value)}

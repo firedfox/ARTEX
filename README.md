@@ -70,90 +70,35 @@ Sync asset data directly from [ScopeSentry](https://github.com/Autumn-27/ScopeSe
 
 ---
 
-## Installation
+## Installation and security migration
 
-> Requires a **PostgreSQL** database; exploration requires an **LLM** (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, which can also be configured in the UI).
+This security build runs in **control-plane-only mode**. Management, historical data,
+text conversations, and domain database tools remain available. Shell/Python, arbitrary
+model filesystem tools, MCP/browser/ScopeSentry, and custom executors are paused until
+an independently isolated runner is implemented and verified. The runtime image contains
+only the control-plane binaries and CA certificates.
 
-### Option 1: one-click install script (recommended)
+**Follow the [deployment and credential-rotation guide](docs/SECURITY_REMEDIATION_20261108.zh-CN.md)
+for both new and existing installations.** It covers private credential generation,
+non-root bind-mount ownership, separate PostgreSQL administrator/application roles,
+the bounded ownership-migration script, explicit JWT rotation, and recovery after an
+interrupted rotation. Installing a new image does not rotate compromised credentials.
 
-```bash
-git clone https://github.com/BaaRai/ARTEX.git
-cd ARTEX
-./install.sh
-```
+The historical one-click installer is paused because it reused a PostgreSQL superuser
+as the application identity. The secure Compose path supports new installations with
+`scripts/bootstrap-postgres.sh`; existing volumes require an explicit reviewed migration.
+Do not use old release binaries for this remediation: build the reviewed security commit.
 
-The script will: detect / auto-install Docker → then let you choose **① all-Docker** or **② local build and run**:
-
-- **① All-Docker**: enter a Postgres password (press Enter for a random one) → auto-writes `.env` → `docker compose up -d --build` (the image is built from this checkout).
-- **② Local run**: choose a database (connect to an existing one / start one with Docker) → generates `config.json` → `go` builds the embedded single binary → starts.
-
-Once installed, open **http://localhost:8787** (on first entry, `/setup` sets the admin password).
-`/setup` asks for a one-time setup token: while no password is set, the backend prints it at startup in its log (`docker compose logs artex | grep "Setup token"`, or the terminal running `./start.sh`).
-
-The web UI is published on `127.0.0.1` by default. To reach it from another machine, or from Windows when ARTEX runs inside WSL, set `ARTEX_BIND_ADDR=0.0.0.0` in `.env` (the setup token still protects the first-run claim), or keep loopback and use a reverse proxy or an SSH tunnel.
-
-### Option 2: Docker Compose (manual)
+The application requires Go 1.26.10 and PostgreSQL for source builds. The standalone
+maintenance command can be built with:
 
 ```bash
-git clone https://github.com/BaaRai/ARTEX.git
-cd ARTEX
-cp .env.example .env          # set POSTGRES_PASSWORD, optionally ANTHROPIC_API_KEY
-# build the single binary first (frontend, then go build -tags embedui), see the Dockerfile header
-docker compose up -d --build  # builds artex from this checkout + starts postgres
-# → http://localhost:8787
+go build -trimpath -o artex-security ./cmd/artex-security
 ```
 
-> The image is built locally. There is no published image to pull: the previous
-> default pointed at a third-party namespace that no longer hosts this project.
-
-The image already includes common tools (ripgrep/curl/vim/npm/nmap…); `./skills` and `./data` are persisted via bind mounts.
-
-For remote MCP, you can choose `http` (Streamable HTTP) or `sse` (legacy SSE) in system settings.
-Legacy SSE servers usually establish the event stream with `GET /sse`, then receive JSON-RPC requests via the
-`/message?sessionId=...` returned by the server; when configuring, set the URL to `/sse` and the request header as
-`Authorization=Bearer <token>`.
-
-### Option 3: download prebuilt binaries (Releases)
-
-Download the zip for your platform from [Releases](https://github.com/BaaRai/ARTEX/releases); after extracting you get `artex` + `start.sh` (`start.bat` on Windows) + `skills/` + `config.example.json`:
-
-```bash
-cp config.example.json config.json   # fill in the database connection
-./start.sh                           # → http://localhost:8787
-```
-
-> Please start with `start.sh` / `start.bat` instead of running `./artex` directly. It is a daemon script: if the process crashes, it restarts it after a backoff.
-> To keep it running in the background: `nohup ./start.sh >artex.log 2>&1 &`.
-
-### Option 4: build the single binary from source
-
-```bash
-# 1) frontend static export
-cd web && npm ci && npm run build:static && cd ..
-# 2) copy into the embed directory
-cp -r web/out server/webui/dist
-# 3) build (only -tags embedui embeds the frontend)
-CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
-./start.sh
-```
-
-### Option 5: build cross-platform release archives
-
-`build.sh` first builds and embeds the frontend, then strips debug info via the Go linker, and compresses the release files into zips. Release mode generates zips for Linux amd64/arm64, macOS amd64/arm64, and Windows amd64 by default:
-
-```bash
-./build.sh --release
-# output: dist/artex-0.3.3-*.zip
-```
-
-UPX self-extracting binaries may be incompatible with some Linux kernels, virtualization environments, or security policies, so they are disabled by default. Use `ARTEX_TARGETS` to customize the targets; when you have confirmed the target runtime is compatible, explicitly pass `--upx` to further shrink the binary:
-
-```bash
-ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
-./build.sh --target linux/amd64 --upx
-```
-
----
+The UI remains on loopback by default. Use your HTTPS reverse proxy or SSH tunnel for
+remote access. Configure `ARTEX_TRUSTED_PROXIES` only for actual trusted proxy CIDRs;
+untrusted `X-Forwarded-For` is ignored by the bounded login rate limiter.
 
 ## Backups
 
@@ -180,63 +125,16 @@ Daily cron example (03:20, operator crontab):
 
 ## Updating and upgrading
 
-> Upgrading only swaps the program and never touches data: the Postgres volume `pgdata`, `./data` (jwt.key / SQLite, etc.), and `./skills` are all preserved. **No manual database migration is needed**: `artex` idempotently re-runs `schema.sql` on every start (with `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`), i.e. "restart equals migrate". It is still recommended to back up `./data` and the database before upgrading.
+Use the [security migration guide](docs/SECURITY_REMEDIATION_20261108.zh-CN.md) before
+starting this build on existing data. Stop all replicas, preserve private evidence and
+backups, migrate the runtime role and bind-mount ownership, rotate leaked credentials,
+and explicitly activate the new signing key. Old stateless JWTs are invalid after the
+upgrade. Startup never reactivates an old key automatically.
 
-### Upgrading from a clone made before 2026-10-23
-
-The repository history was rewritten that day to drop a personal email address from the commit metadata. A clone made before then cannot fast-forward, and `./update.sh` now stops instead of silently rebuilding stale code. Recover once, then upgrade normally:
-
-```bash
-git stash                 # only if you have local changes
-git fetch origin
-git reset --hard origin/main
-git stash pop             # only if you stashed
-```
-
-Your data is not affected: `./data`, the `pgdata` volume and `./skills` are not part of the git history.
-
-### Option 1: one-click update script
-
-```bash
-cd ARTEX
-./update.sh
-```
-
-The script first optionally `git pull`s the latest code, then lets you choose **① Docker update** or **② local build update** (matching `install.sh`):
-
-- **① Docker**: rebuilds the image from this checkout → `docker compose build artex` → `docker compose up -d artex` (restarting migrates the schema automatically).
-- **② Local**: rebuild the frontend static assets → recompile `./artex` (restart the process for it to take effect).
-
-### Option 2: Docker Compose (manual)
-
-```bash
-cd ARTEX
-git pull                       # update compose / scripts
-docker compose build artex     # rebuild the image from this checkout
-docker compose up -d artex     # recreate the container → schema migrates automatically
-docker image prune -f          # clean up old images (optional)
-```
-
-### Option 3: prebuilt binaries (Releases)
-
-Download the new version's zip from [Releases](https://github.com/BaaRai/ARTEX/releases), stop the old process, then overwrite `artex` and `skills/` (keep your `config.json` and `data/`), and restart:
-
-```bash
-cp -r <extracted dir>/skills ./ && cp <extracted dir>/artex ./
-./start.sh
-```
-
-### Option 4: build from source
-
-```bash
-git pull
-cd web && npm ci && npm run build:static && cd ..
-cp -r web/out server/webui/dist
-CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
-# restart ./start.sh
-```
-
----
+A normal later rebuild with the same key and database preserves issued sessions. A
+password change, offline password reset, or explicit key activation revokes sessions.
+Rollback to a pre-remediation image would restore the vulnerable authentication and
+execution model; keep the service stopped until a safe version is available.
 
 ## Configuration
 
@@ -246,7 +144,7 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 {
   "database": {
     "host": "127.0.0.1", "port": 5432,
-    "user": "artex", "password": "yourpass",
+    "user": "artex_app", "password": "dedicated-runtime-password",
     "dbname": "artex", "sslmode": "disable"
   }
 }

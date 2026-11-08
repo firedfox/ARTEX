@@ -360,6 +360,46 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Tokens are accepted only when the exact SHA-256 was issued after a successful
+-- login. No legacy stateless JWTs are imported. Neither table stores a raw token
+-- or a signing key. Key rotation and password changes invalidate the generation.
+CREATE TABLE IF NOT EXISTS auth_state (
+    singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    signing_key_hash TEXT NOT NULL CHECK (signing_key_hash ~ '^[0-9a-f]{64}$'),
+    generation UUID NOT NULL DEFAULT gen_random_uuid()
+);
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash TEXT PRIMARY KEY CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+    generation UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL CHECK (expires_at > created_at)
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+
+-- Also covers reset-password.sh and an operator's direct SQL reset. Do not
+-- leave a gap between changing the password and revoking existing sessions.
+CREATE OR REPLACE FUNCTION revoke_sessions_on_password_change() RETURNS trigger AS $$
+DECLARE changed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        changed := NEW.key = 'auth.password_hash';
+    ELSIF TG_OP = 'DELETE' THEN
+        changed := OLD.key = 'auth.password_hash';
+    ELSE
+        changed := (OLD.key = 'auth.password_hash' OR NEW.key = 'auth.password_hash')
+            AND (OLD.key IS DISTINCT FROM NEW.key OR OLD.value IS DISTINCT FROM NEW.value);
+    END IF;
+    IF changed THEN
+        UPDATE auth_state SET generation=gen_random_uuid() WHERE singleton;
+        DELETE FROM auth_sessions;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_auth_password_sessions ON settings;
+CREATE TRIGGER trg_auth_password_sessions AFTER INSERT OR UPDATE OR DELETE ON settings
+FOR EACH ROW EXECUTE FUNCTION revoke_sessions_on_password_change();
+
 CREATE TABLE IF NOT EXISTS llm_profiles (
     id               BIGSERIAL PRIMARY KEY,
     name             TEXT NOT NULL UNIQUE,

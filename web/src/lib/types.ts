@@ -1253,6 +1253,8 @@ export interface Tool {
 // ---- Stats ----
 export interface Stats {
   assets: number;
+  execution_mode?: string;
+  isolated_runner_ready?: boolean;
   engine_mode: EngineMode;
   llm_configured: boolean;
   roe_enabled: boolean;

@@ -3,10 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sync/atomic"
+
+	"github.com/Autumn-27/artex/internal/executionpolicy"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,79 +86,34 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// TestExecPython runs a real Python script end-to-end: it must read params from
-// stdin JSON and the mirrored env var, then print — verifying the whole script
-// param-passing path. Skips if no python3.
-func TestExecPython(t *testing.T) {
-	interp, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
+// Local script and HTTP executors are intentionally closed until a task runner
+// is isolated from control-plane credentials. Keep real side-effect probes here.
+func TestExecutionBoundaryPythonDoesNotStart(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "executed")
+	out, err := execPython(context.Background(), "python3", "test", "open("+strconv.Quote(marker)+",'w').write('ran')", nil, dir, nil, time.Second)
+	if !errors.Is(err, executionpolicy.ErrIsolatedRunnerRequired) || out != "" {
+		t.Fatalf("local Python was not refused: output=%q err=%v", out, err)
 	}
-	code := `import json,sys,os
-a = json.load(sys.stdin)
-print("stdin_target=" + a["target"])
-print("env_target=" + os.environ.get("TOOL_TARGET",""))
-print("port=" + str(a["port"]))
-`
-	out, err := execPython(context.Background(), interp, "test", code,
-		map[string]any{"target": "example.com", "port": float64(8080)},
-		t.TempDir(), nil, 10*time.Second)
-	if err != nil {
-		t.Fatalf("execPython error: %v", err)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("Python created a marker")
 	}
-	for _, want := range []string{"stdin_target=example.com", "env_target=example.com", "port=8080"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("output missing %q:\n%s", want, out)
-		}
+	if _, err := os.Stat(filepath.Join(dir, ".tools")); !os.IsNotExist(err) {
+		t.Fatal("script was staged before the isolation check")
 	}
 }
 
-// TestRunHTTPTool functionally exercises the http executor against a local server:
-// method/url/header/body templates are rendered from params, the request is sent,
-// and the response status+body are returned. No recording proxy → s.m untouched.
-func TestRunHTTPTool(t *testing.T) {
-	var gotMethod, gotAuth, gotBody string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		gotAuth = r.Header.Get("Authorization")
-		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
-		w.WriteHeader(201)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer srv.Close()
-
-	execRaw, _ := json.Marshal(map[string]any{
-		"method":  "POST",
-		"url":     srv.URL + "/submit?flag={flag}",
-		"headers": map[string]string{"Authorization": "Bearer {token}"},
-		"body":    `{"flag":"{flag}"}`,
-	})
-	res, err := (&Server{}).runHTTPTool(context.Background(), execRaw,
-		map[string]any{"flag": "CTF{x}", "token": "sekret"}, nil)
-	if err != nil {
-		t.Fatalf("runHTTPTool: %v", err)
+func TestExecutionBoundaryCustomHTTPDoesNotConnect(t *testing.T) {
+	var requests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); w.WriteHeader(200) }))
+	defer target.Close()
+	spec, _ := json.Marshal(map[string]any{"url": target.URL, "method": "POST", "body": "synthetic-test-body"})
+	result, err := (&Server{}).runHTTPTool(context.Background(), spec, map[string]any{}, nil)
+	if err != nil || !result.IsError || !strings.Contains(result.Flatten(), "isolated task runner") {
+		t.Fatalf("HTTP was not refused: %v %v", result, err)
 	}
-	if res.IsError || len(res.Content) == 0 {
-		t.Fatalf("unexpected result: %+v", res)
-	}
-	var out struct {
-		Status int    `json:"status"`
-		Body   string `json:"body"`
-	}
-	_ = json.Unmarshal([]byte(res.Content[0].Text), &out)
-
-	if gotMethod != "POST" {
-		t.Fatalf("method: %q", gotMethod)
-	}
-	if gotAuth != "Bearer sekret" {
-		t.Fatalf("header template not rendered: %q", gotAuth)
-	}
-	if gotBody != `{"flag":"CTF{x}"}` {
-		t.Fatalf("body template not rendered: %q", gotBody)
-	}
-	if out.Status != 201 || !strings.Contains(out.Body, `"ok":true`) {
-		t.Fatalf("response not captured: %+v", out)
+	if requests.Load() != 0 {
+		t.Fatal("custom HTTP reached control-plane network before isolation")
 	}
 }
 
@@ -162,26 +123,5 @@ func TestDetectPython(t *testing.T) {
 	}
 	if p := detectPython(); p == "" {
 		t.Fatal("detectPython returned empty despite python3 on PATH")
-	}
-}
-
-// The http tool must truncate an oversized response through norma's Capture, the
-// same valve every other tool uses — a session with no OutputDir falls back to a
-// head+tail cut, so a body far past the default cap comes back shortened.
-func TestHTTPToolTruncatesLargeBody(t *testing.T) {
-	big := strings.Repeat("x", 40000) // past Capture's 30000 default
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(big))
-	}))
-	defer srv.Close()
-
-	execRaw, _ := json.Marshal(map[string]any{"method": "GET", "url": srv.URL})
-	res, err := (&Server{}).runHTTPTool(context.Background(), execRaw, map[string]any{}, nil)
-	if err != nil {
-		t.Fatalf("runHTTPTool: %v", err)
-	}
-	out := res.Flatten()
-	if len(out) >= 40000 {
-		t.Fatalf("oversized http body was not truncated: len=%d", len(out))
 	}
 }

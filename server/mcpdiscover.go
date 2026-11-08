@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	"github.com/Autumn-27/artex/mcphttp"
 	"github.com/Autumn-27/norma/mcp"
 	actool "github.com/Autumn-27/norma/tool"
@@ -22,6 +23,9 @@ type mcpClient interface {
 
 // connectMCP dials one MCP server per its transport. Callers must Close the client.
 func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		return nil, err
+	}
 	switch m.Transport {
 	case "stdio":
 		if m.Command == "" {

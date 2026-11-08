@@ -706,20 +706,35 @@ func (t *Traffic) blobPath(hash string) (string, error) {
 // Streaming matters here: the driver exposes no incremental BLOB API, so keeping
 // large bodies on disk is what lets them be served without loading them whole.
 func (t *Traffic) Blob(hash string) (*os.File, int64, error) {
-	p, err := t.blobPath(hash)
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if !blobHashRe.MatchString(hash) {
+		return nil, 0, fmt.Errorf("invalid blob hash")
+	}
+	root, err := t.openFileRoot()
 	if err != nil {
 		return nil, 0, err
 	}
-	f, err := os.Open(p)
-	if err != nil {
-		return nil, 0, err
+	defer root.Close()
+	for _, name := range []string{
+		filepath.Join("_blobs", "sha256", hash[:2], hash+".bin"),
+		filepath.Join("_blobs", "sha256", hash[:2], hash[2:4], hash+".bin"),
+	} {
+		file, err := root.Open(name)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, 0, errTrafficFileUnavailable
+		}
+		info, err := file.Stat()
+		entry, entryErr := root.Lstat(name)
+		if err != nil || entryErr != nil || !info.Mode().IsRegular() || !entry.Mode().IsRegular() || !os.SameFile(info, entry) {
+			file.Close()
+			return nil, 0, errTrafficFileUnavailable
+		}
+		return file, info.Size(), nil
 	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, 0, err
-	}
-	return f, st.Size(), nil
+	return nil, 0, errTrafficFileUnavailable
 }
 
 // BlobRange reads at most length bytes of a blob from offset, and reports the
@@ -969,8 +984,19 @@ FROM exchange_bodies b JOIN exchanges e ON e.id=b.id WHERE b.id=?`, id).
 	if strings.TrimSpace(rel) == "" {
 		return "", "", fmt.Errorf("exchange %s has no body record", id)
 	}
-	rb, _ := os.ReadFile(filepath.Join(t.dir, rel, "request.http"))
-	pb, _ := os.ReadFile(filepath.Join(t.dir, rel, "response.http"))
+	root, err := t.openFileRoot()
+	if err != nil {
+		return "", "", err
+	}
+	defer root.Close()
+	rb, err := readTrafficFile(root, filepath.Join(rel, "request.http"))
+	if err != nil {
+		return "", "", err
+	}
+	pb, err := readTrafficFile(root, filepath.Join(rel, "response.http"))
+	if err != nil {
+		return "", "", err
+	}
 	return string(rb), string(pb), nil
 }
 

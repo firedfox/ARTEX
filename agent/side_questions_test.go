@@ -18,7 +18,7 @@ import (
 
 type sideAgentProvider struct {
 	calls int
-	path  string
+	todo  string
 }
 
 func (p *sideAgentProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
@@ -49,8 +49,8 @@ func (p *sideAgentProvider) Stream(ctx context.Context, req llm.CompletionReques
 func (p *sideAgentProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	p.calls++
 	if p.calls == 1 {
-		input, _ := json.Marshal(map[string]string{"file_path": p.path})
-		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "fixture-read", Name: "Read", Input: input}}}, "tool_use", llm.Usage{}, nil
+		input, _ := json.Marshal(map[string]any{"todos": []map[string]string{{"content": p.todo, "status": "completed"}}})
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "fixture-todo", Name: "TodoWrite", Input: input}}}, "tool_use", llm.Usage{}, nil
 	}
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("main finished")}}, "end_turn", llm.Usage{}, nil
 }
@@ -59,11 +59,9 @@ func TestSideActualChatCheckpointToolResultAndTranscriptIsolation(t *testing.T) 
 	for _, streaming := range []bool{false, true} {
 		t.Run(map[bool]string{true: "stream", false: "atomic"}[streaming], func(t *testing.T) {
 			dir := t.TempDir()
-			file := filepath.Join(dir, "asset.txt")
-			if err := os.WriteFile(file, []byte("controlled-homepage-result"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			p := &sideAgentProvider{path: file}
+			// Exercise a real allowed in-memory tool; arbitrary file reads are now
+			// correctly refused by the control-plane execution boundary.
+			p := &sideAgentProvider{todo: "controlled-domain-result"}
 			bound := sidequestion.Bind(p, sidequestion.Model{Model: "fixture", Streaming: streaming})
 			store := transcript.NewStore(filepath.Join(dir, "transcripts"))
 			chat := NewChatAgent(bound, "fixture", dir, store, 100000)
@@ -71,7 +69,7 @@ func TestSideActualChatCheckpointToolResultAndTranscriptIsolation(t *testing.T) 
 			var snapshots []sidequestion.Snapshot
 			var activities []db.Activity
 			ctx := sidequestion.WithPublisher(t.Context(), func(s sidequestion.Snapshot) { snapshots = append(snapshots, s) })
-			if _, err := chat.Chat(ctx, "mainagent", "conv-987654", "Read the local fixture", 5, time.Minute, false, func(a db.Activity) { activities = append(activities, a) }); err != nil {
+			if _, err := chat.Chat(ctx, "mainagent", "conv-987654", "Record the fixture in the todo list", 5, time.Minute, false, func(a db.Activity) { activities = append(activities, a) }); err != nil {
 				t.Fatal(err)
 			}
 			if len(snapshots) < 3 {
@@ -79,7 +77,7 @@ func TestSideActualChatCheckpointToolResultAndTranscriptIsolation(t *testing.T) 
 			}
 			last := snapshots[len(snapshots)-1]
 			raw, _ := json.Marshal(last)
-			if last.Parent.ConversationID != 987654 || !strings.Contains(string(raw), "controlled-homepage-result") || !strings.Contains(string(raw), "main finished") {
+			if last.Parent.ConversationID != 987654 || !strings.Contains(string(raw), "controlled-domain-result") || !strings.Contains(string(raw), "Todos have been modified successfully") || !strings.Contains(string(raw), "main finished") {
 				t.Fatalf("missing real tool result/final reply: %s", raw)
 			}
 			before, err := os.ReadFile(store.MainPath("conv-987654"))
@@ -100,9 +98,9 @@ func TestSideActualChatCheckpointToolResultAndTranscriptIsolation(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Reset the fake to request another Read; the side executor cannot run it.
+			// Reset the fake to request another tool; the side executor cannot run it.
 			p.calls = 0
-			p.path = filepath.Join(dir, "nonexistent")
+			p.todo = "side-only-tool-input"
 			answer, err := (sidequestion.SideQuestionService{Provider: bound}).Answer(t.Context(), req, streaming, nil)
 			if err != nil || !answer.ToolUse || p.calls != 1 || !strings.Contains(answer.Text, "cannot execute tool") {
 				t.Fatalf("tool denial %+v %v", answer, err)

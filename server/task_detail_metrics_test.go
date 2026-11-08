@@ -38,8 +38,8 @@ VALUES ($1,'goal','{}','met'), ($1,'goal','{}','open')`, task.ExpID); err != nil
 		t.Fatal(err)
 	}
 
-	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
-	token, err := signJWT(s.jwtKey)
+	s := newTestServer(t, context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
+	token, err := issueTestSession(s)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	"github.com/Autumn-27/artex/mcphttp"
 )
 
@@ -45,6 +46,9 @@ func (s *Server) findMCPByName(name string) (*db.MCPServer, error) {
 // scopeSentryClient dials the configured ScopeSentry MCP (http transport). The env
 // map doubles as HTTP headers (X-API-Key). Callers must Close the client.
 func (s *Server) scopeSentryClient(ctx context.Context) (*mcphttp.Client, error) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		return nil, err
+	}
 	m, err := s.findMCPByName(scopeSentryMCPName)
 	if err != nil {
 		return nil, err
@@ -102,7 +106,7 @@ func (s *Server) syncSSStatus(w http.ResponseWriter, r *http.Request) {
 	if configured && m.Enabled {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
-		if cl, cerr := mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure, m.TimeoutSeconds); cerr == nil {
+		if cl, cerr := s.scopeSentryClient(ctx); cerr == nil {
 			if _, terr := cl.Tools(ctx); terr == nil {
 				resp["reachable"] = true
 			}

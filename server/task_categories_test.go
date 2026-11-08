@@ -21,9 +21,9 @@ func TestTaskCategoryBatchRoute(t *testing.T) {
 	defer m.Close()
 
 	td := t.TempDir()
-	s := New(context.Background(), m, td, td, td)
+	s := newTestServer(t, context.Background(), m, td, td, td)
 	h := s.Handler()
-	token, err := signJWT(s.jwtKey)
+	token, err := issueTestSession(s)
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
 	}

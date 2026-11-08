@@ -592,14 +592,14 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// budget to emit OK cleanly (finish=stop).
 	// EscalateMaxTokens stays false: don't raise the cap and retry on truncation, to
 	// avoid burning tokens in a resume loop.
-	reply, err := agentcore.Run(ctx, agentcore.Options{
+	reply, err := agentcore.Run(ctx, controlPlaneOptions(agentcore.Options{
 		Provider:       prov,
 		SystemPrompt:   []string{"You are a connection test. Just output the two characters OK — no thinking, no explanation, nothing else."},
 		PermissionMode: acperm.ModeBypass,
 		MaxTurns:       1,
 		MaxTokens:      8192,
 		NonStreaming:   !c.Stream, // use this profile's real send/receive mode for the connection test
-	}, "ping")
+	}), "ping")
 	lat := time.Since(start)
 	if err != nil {
 		return lat, "", err

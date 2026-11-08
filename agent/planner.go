@@ -385,7 +385,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	// Domain tools + the basic default tool set (Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash).
 	// When the asset-coverage feature is off, drop add_task_scope/list_untested_assets (not in the prompt).
-	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
+	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), controlPlaneTools()...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "planner", base)
 	defer cleanup()

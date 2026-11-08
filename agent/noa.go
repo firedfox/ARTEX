@@ -4,6 +4,7 @@ import (
 	"log"
 	"path/filepath"
 
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/noaadapter"
 )
@@ -33,6 +34,12 @@ func noaWarn(session string) func(string) {
 // it reports via onWarn and falls back to the built-in compaction. On success it clears
 // opts.Compaction, avoiding agentcore's "two context managers set at once" warning.
 func enableNoa(opts *agentcore.Options, enabled func() bool, archiveRoot, sessionID string, onWarn func(string)) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		if enabled != nil && enabled() && onWarn != nil {
+			onWarn(err.Error())
+		}
+		return
+	}
 	if enabled == nil || !enabled() {
 		return
 	}

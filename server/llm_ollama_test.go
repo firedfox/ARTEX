@@ -113,7 +113,7 @@ func TestOllamaKeylessProfileLifecycle(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -199,7 +199,7 @@ func TestOllamaListModels(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 
 	call := func(baseURL string) (bool, []string) {
 		body, _ := json.Marshal(map[string]any{"provider": "ollama", "base_url": baseURL, "api_key": ""})

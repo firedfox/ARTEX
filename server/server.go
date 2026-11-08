@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/internal/executionpolicy"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/report"
@@ -44,12 +46,15 @@ type Server struct {
 	ctx    context.Context
 
 	skillDir string // root directory for skill subdirectories
-	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
+	jwtKey   []byte // HS256 signing key loaded from / generated into keyDir/jwt.key
 
 	scrubSecrets bool // drop ARTEX_PG_DSN and the API keys from the environment once read (binary only)
 
 	setupMu    sync.Mutex
 	setupToken string // one-time token POST /api/auth/init requires; empty when none is active
+
+	loginLimit     *loginLimiter  // per-IP attempt limit on POST /api/auth/login
+	trustedProxies []netip.Prefix // ARTEX_TRUSTED_PROXIES; see clientIP
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
@@ -146,16 +151,23 @@ type triggeredRun struct {
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string, opts ...Option) *Server {
-	key, err := loadOrCreateJWTKey(keyDir, dataDir)
+	key, err := loadOrCreateJWTKey(keyDir, dataDir, skillDir)
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
+	}
+	authCtx, authCancel := context.WithTimeout(ctx, 5*time.Second)
+	err = m.pg.CheckOrInitializeAuthSigningKey(authCtx, tokenDigest(string(key)))
+	authCancel()
+	if err != nil {
+		log.Fatalf("[auth] signing key/session store not ready; use the offline key activation procedure after rotation: %v", err)
 	}
 	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
-		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1),
+		loginLimit: newLoginLimiter(time.Now)}
 	for _, o := range opts {
 		o(s)
 	}
@@ -675,6 +687,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("POST /api/auth/logout", s.authLogout)
 
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)
@@ -964,12 +977,22 @@ func (s *Server) Handler() http.Handler {
 
 // --- handlers ---
 
+// health answers without a token (requireAuth exempts it), but only a caller
+// with a valid token gets the service name and version; the web UI's top bar
+// reads the version, and sends its token.
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	active, err := s.sessionActive(r.Context(), extractToken(r))
+	if err != nil || !active {
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{}
+	out["execution_mode"] = "control-plane-only"
+	out["isolated_runner_ready"] = false
 	out["engine_mode"] = "idle"              // spec enum; overridden below when a task is active
 	out["llm_configured"] = s.engine.Ready() // is an LLM provider installed at all
 	if tr := s.m.Traffic(); tr != nil {
@@ -1545,12 +1568,12 @@ type createTaskReq struct {
 	CategoryID           *int64   `json:"category_id,omitempty"`
 	Description          string   `json:"description"`
 	Goal                 string   `json:"goal"`
-	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`    // the LLM profile to run this task on; omitted/null = use the active profile
-	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"`   // ordered task-level profile chain; the first entry takes effect initially
-	SourceTaskIDs        []string `json:"source_task_ids,omitempty"`   // direct, read-only inherited source tasks
-	CompanyIDs           []int64  `json:"company_ids,omitempty"`       // links the company scope and snapshots its current assets; does not copy assets or force intent generation
+	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`  // the LLM profile to run this task on; omitted/null = use the active profile
+	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"` // ordered task-level profile chain; the first entry takes effect initially
+	SourceTaskIDs        []string `json:"source_task_ids,omitempty"` // direct, read-only inherited source tasks
+	CompanyIDs           []int64  `json:"company_ids,omitempty"`     // links the company scope and snapshots its current assets; does not copy assets or force intent generation
 	TimeoutSeconds       int      `json:"timeout_seconds"`
-	LLMRotate            *bool    `json:"llm_rotate"`             // task-level timeout (seconds); 0/omitted = no limit
+	LLMRotate            *bool    `json:"llm_rotate"`                  // task-level timeout (seconds); 0/omitted = no limit
 	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`      // planner heartbeat interval (seconds); 0/omitted = default 600 (10min); floor = default = 600, lower values are raised to 600
 	PlanQuietMode        *bool    `json:"plan_quiet_mode,omitempty"`   // planner quiet-mode switch (#86); omitted = default on; false = edge rounds always plan
 	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // issue one seed intent at creation (content = description + goal) so a worker can start right away without waiting for the first planner round; omitted/null = default off, the standard plan-then-execute flow. Pass true explicitly to enable (for CTF tasks often solved in one work, this skips the pre-start planner round).
@@ -3477,6 +3500,10 @@ func notifyDigestIntervalMin(pg *db.DB) int {
 
 // pgDetectPython re-runs interpreter detection, stores + returns it.
 func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	p := detectPython()
 	if p == "" {
 		writeErr(w, 404, "no python detected (neither python3 nor python is on PATH)")
@@ -3695,6 +3722,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 // edits are tested); empty API keys fall back to stored values so the user need
 // not retype them. Always 200 with {ok, error?, count?, backend?}.
 func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
+	if err := executionpolicy.RequireIsolatedRunner(); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	var req struct {
 		Backend   string `json:"web_search_backend"`
 		Proxy     string `json:"web_search_proxy"`

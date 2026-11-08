@@ -28,7 +28,7 @@ func TestLLMTestStoredKeyFallbackIsTrimmed(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 
 	var gotKey atomic.Value
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +107,7 @@ func TestLLMTestStoredProfileUsesProfileEndpoint(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 
 	var hits atomic.Int32
 	var gotKey atomic.Value
