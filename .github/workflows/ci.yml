@@ -22,7 +22,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U artex"
+          --health-cmd "pg_isready -U artex -d artextest"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -33,8 +33,15 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Check PostgreSQL migration client
-        run: psql --version
+      - name: Prepare the explicit security test database
+        env:
+          PGPASSWORD: testpass
+        # Most packages create suffixed fixture databases in TestMain. The
+        # offline CLI deliberately requires its configured database to exist.
+        run: |
+          psql --version
+          psql -X --no-password --host localhost --username artex --dbname artextest \
+            --set ON_ERROR_STOP=1 --command 'CREATE DATABASE artextest_security'
       - id: build
         run: go build ./...
       - run: go vet ./...

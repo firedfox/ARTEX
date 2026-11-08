@@ -98,8 +98,17 @@ func TestAuthSessionRejectsSignedButUnissuedTokens(t *testing.T) {
 
 func TestAuthSessionLoginAndSetupActuallyRegisterTokens(t *testing.T) {
 	s, _ := authSessionFixture(t)
-	loginBody, _ := json.Marshal(map[string]string{"password": authSessionTestPassword})
-	w := authSessionRequest(s, "", "POST", "/api/auth/login", string(loginBody), s.authLogin)
+	missingUsername, _ := json.Marshal(map[string]string{"password": authSessionTestPassword})
+	w := authSessionRequest(s, "", "POST", "/api/auth/login", string(missingUsername), s.authLogin)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("login without username status=%d, want 401", w.Code)
+	}
+	var issued int
+	if err := s.m.pg.QueryRow(`SELECT count(*) FROM auth_sessions`).Scan(&issued); err != nil || issued != 0 {
+		t.Fatalf("login without username issued sessions=%d err=%v", issued, err)
+	}
+	loginBody, _ := json.Marshal(map[string]string{"username": "ARTEX", "password": authSessionTestPassword})
+	w = authSessionRequest(s, "", "POST", "/api/auth/login", string(loginBody), s.authLogin)
 	if w.Code != http.StatusOK {
 		t.Fatalf("real login status=%d body=%s", w.Code, w.Body.String())
 	}
