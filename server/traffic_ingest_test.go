@@ -25,8 +25,9 @@ func ingestServer(t *testing.T) (*Server, func(method, path, body string) *httpt
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
 	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
+	cancel()
 	s.archiveWG.Wait()
 	<-s.side.done
 	token, err := issueTestSession(s)

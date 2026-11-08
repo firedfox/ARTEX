@@ -35,7 +35,8 @@ jobs:
           go-version-file: go.mod
       - name: Check PostgreSQL migration client
         run: psql --version
-      - run: go build ./...
+      - id: build
+        run: go build ./...
       - run: go vet ./...
       # Skipped tests, tracked in issue #9:
       # - TestInterceptFilterHTTP, TestGraphOverviewExpandsAssociatedCompanyScope,
@@ -63,6 +64,9 @@ jobs:
           ./intercept ./llmpool ./llmrec ./mcphttp ./notify ./sidequestion ./traffic
 
       - name: Verify security boundaries against PostgreSQL without skipped coverage
+        # Keep this required gate observable even when an unrelated legacy test
+        # fails earlier. The job still fails for any failed step; nothing is ignored.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           ARTEX_PG_DSN: postgres://artex:testpass@localhost:5432/artextest_security?sslmode=disable
         shell: bash

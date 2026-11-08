@@ -56,8 +56,11 @@ func TestNewAppliesSecretScrubOption(t *testing.T) {
 	t.Cleanup(func() { m.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithSecretScrub())
 	cancel()
-	_ = newTestServer(t, ctx, m, t.TempDir(), t.TempDir(), t.TempDir(), WithSecretScrub())
+	s.archiveWG.Wait()
+	<-s.side.done
 
 	if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("OPENAI_API_KEY") != "" {
 		t.Fatal("New did not apply WithSecretScrub: the secrets are still in the environment")

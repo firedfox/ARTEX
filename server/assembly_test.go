@@ -1,93 +1,123 @@
 package server
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
-// hasSkillTool reports whether the packed tool set contains the Skill meta-tool.
 func hasSkillTool(tools []actool.CoreTool) bool {
-	for _, t := range tools {
-		if t.Name() == "Skill" {
+	for _, tool := range tools {
+		if tool.Name() == "Skill" {
 			return true
 		}
 	}
 	return false
 }
 
-// TestAssembleVisibleSkill verifies a filesystem skill made visible to an agent is
-// packed into that agent's tool set (as the single Skill meta-tool) via the wired
-// ToolAugment hook. Skills live on disk under skillDir; visibility is a per-agent
-// (agent × skill_name) row keyed by the skill's directory name.
-func TestAssembleVisibleSkill(t *testing.T) {
-	dsn, _, err := db.DSN()
-	if err != nil {
-		t.Skipf("no database config (%v) — skipping", err)
-	}
-	pg, err := db.Open(dsn)
-	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
-	}
-	defer pg.Close()
+func isolateAssemblyHooks(t *testing.T) {
+	t.Helper()
+	augment, resolve := agent.ToolAugment, agent.ToolResolve
+	binding := agent.FindingTrafficBindingEnabled
+	t.Cleanup(func() {
+		agent.ToolAugment, agent.ToolResolve = augment, resolve
+		agent.FindingTrafficBindingEnabled = binding
+	})
+	// Exercise the augmenter independently of catalog hooks left by another
+	// server fixture; domain catalog bindings have their own live-PG tests.
+	agent.ToolResolve = nil
+	agent.FindingTrafficBindingEnabled = func() bool { return false }
+}
 
-	// Filesystem skill fixture: <skillDir>/t-assemble/SKILL.md. The directory name
-	// (t-assemble) is the visibility key matched against AgentSkillNames.
+func assertAssemblyContained(t *testing.T, tools []actool.CoreTool, def agent.DeferredInfo, expected ...actool.CoreTool) {
+	t.Helper()
+	if hasSkillTool(tools) {
+		t.Fatal("control-plane assembly loaded a filesystem skill")
+	}
+	if len(def.Deferred) != 0 || len(def.GlobalNames) != 0 || def.Unlock != nil || def.UnlockSkill != nil {
+		t.Fatal("control-plane assembly retained deferred execution or a skill unlock callback")
+	}
+	if len(tools) != len(expected) {
+		t.Fatalf("assembled %d tools, want %d allowed domain tools", len(tools), len(expected))
+	}
+	got := names(tools)
+	for _, tool := range expected {
+		if got[tool.Name()] == nil {
+			t.Fatalf("allowed domain tool %s disappeared", tool.Name())
+		}
+	}
+}
+
+// Visibility remains editable configuration; it must never reactivate local
+// skill reads/execution while no isolated runner exists. Both the incoming base
+// domain tool and the host-provided domain tool survive the actual wrapper.
+func TestExecutionBoundaryVisibleSkillPreservesConfiguration(t *testing.T) {
+	s, _ := authSessionFixture(t)
+	pg := s.m.pg
+	isolateAssemblyHooks(t)
 	skillDir := t.TempDir()
 	const skillName = "t-assemble"
 	if err := os.MkdirAll(filepath.Join(skillDir, skillName), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	md := "---\nname: t-assemble\ndescription: do the thing\n---\ndo the thing"
-	if err := os.WriteFile(filepath.Join(skillDir, skillName, "SKILL.md"), []byte(md), 0o644); err != nil {
+	skillPath := filepath.Join(skillDir, skillName, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	wireAgentAugment(pg, skillDir, nil)
-	t.Cleanup(func() { agent.ToolAugment = nil })
-
-	ag, _ := pg.GetAgentByKey("planner")
-	if ag == nil {
-		t.Fatal("planner agent missing")
+	ag, err := pg.GetAgentByKey("planner")
+	if err != nil || ag == nil {
+		t.Fatalf("planner agent missing: %v", err)
 	}
-
-	// Isolate this test from whatever skill visibility the planner already has in the
-	// shared DB: clear it now, restore it on cleanup.
-	orig, _ := pg.AgentSkillNames(ag.ID)
+	original, err := pg.AgentSkillNames(ag.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := pg.SetAgentSkillVisibility(ag.ID, original); err != nil {
+			t.Errorf("restore visible skill configuration: %v", err)
+		}
+	})
 	if err := pg.SetAgentSkillVisibility(ag.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pg.SetAgentSkillVisibility(ag.ID, orig) })
-
-	// before: skill not visible → no Skill meta-tool
-	extra, _, cleanup := agent.ToolAugment(context.Background(), "planner")
-	cleanup()
-	if hasSkillTool(extra) {
-		t.Fatalf("expected no Skill meta-tool before the skill is made visible")
+	ts := agent.NewToolSet(nil, "")
+	base, host := ts.GraphOverviewTool(), ts.ListFindingsTool()
+	wireAgentAugment(pg, skillDir, func() ([]actool.CoreTool, map[string][]string) {
+		return []actool.CoreTool{host}, nil
+	})
+	assemble := func() {
+		// Production callers use AugmentTools, which normalizes an absent
+		// resource cleanup to a callable no-op. Do not dereference raw nil cleanup.
+		tools, def, cleanup := agent.AugmentTools(t.Context(), "planner", []actool.CoreTool{base})
+		defer cleanup()
+		assertAssemblyContained(t, tools, def, base, host)
 	}
-
-	// make the skill visible to planner
+	assemble()
 	if err := pg.ToggleSkillVisibility(ag.ID, skillName, true); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pg.ToggleSkillVisibility(ag.ID, skillName, false) })
+	assemble()
+	visible, err := pg.AgentSkillNames(ag.ID)
+	if err != nil || len(visible) != 1 || visible[0] != skillName {
+		t.Fatalf("containment changed saved visibility: %v (%v)", visible, err)
+	}
+	contents, err := os.ReadFile(skillPath)
+	if err != nil || string(contents) != md {
+		t.Fatal("containment changed the administrator's skill file")
+	}
+}
 
-	// after: the Skill meta-tool is packed in
-	extra, _, cleanup = agent.ToolAugment(context.Background(), "planner")
+// The early refusal also works without a database or a readable skills root.
+// This covers the no-resource/nil-cleanup path that the old test called directly.
+func TestExecutionBoundaryAssemblyNeedsNoSkillLoader(t *testing.T) {
+	isolateAssemblyHooks(t)
+	base := agent.NewToolSet(nil, "").GraphOverviewTool()
+	wireAgentAugment(nil, filepath.Join(t.TempDir(), "absent-skills"), nil)
+	tools, def, cleanup := agent.AugmentTools(t.Context(), "planner", []actool.CoreTool{base})
 	defer cleanup()
-	if !hasSkillTool(extra) {
-		t.Fatalf("expected the Skill meta-tool after making the skill visible")
-	}
-
-	// AugmentTools appends extra to base without filtering base
-	combined, _, c2 := agent.AugmentTools(context.Background(), "planner", nil)
-	defer c2()
-	if !hasSkillTool(combined) {
-		t.Fatalf("AugmentTools should surface the Skill meta-tool")
-	}
+	assertAssemblyContained(t, tools, def, base)
 }

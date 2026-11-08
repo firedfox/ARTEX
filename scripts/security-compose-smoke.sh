@@ -74,7 +74,7 @@ artex_started=true
 
 wait_for_health() {
   local attempt code
-  for attempt in $(seq 1 90); do
+  for ((attempt = 0; attempt < 90; attempt++)); do
     code=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 2 http://127.0.0.1:8787/api/health || true)
     if [[ $code == 200 ]]; then
       return 0
